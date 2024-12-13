@@ -1,0 +1,132 @@
+import pandas as pd
+import statsmodels.formula.api as smf
+import os
+import joblib
+import numpy as np
+from sklearn.metrics import mean_squared_error, r2_score
+
+# Base directories
+BASE_DIR = "split_by_timepoint"
+MEAN_DIR = os.path.join(BASE_DIR, "Mean_Baseline")
+MEDIAN_DIR = os.path.join(BASE_DIR, "Median_Baseline")
+
+# Output directories
+OUTPUT_DIR = os.path.join(BASE_DIR, "Output")
+PREDICTIONS_DIR = os.path.join(OUTPUT_DIR, "Predictions")
+METRICS_DIR = os.path.join(OUTPUT_DIR, "Metrics")
+MODELS_DIR = os.path.join(OUTPUT_DIR, "Models")
+
+os.makedirs(PREDICTIONS_DIR, exist_ok=True)
+os.makedirs(METRICS_DIR, exist_ok=True)
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+# Subject IDs to include
+SUBJECT_IDS = [
+    98, 104, 97, 100, 117, 115, 106, 110, 111, 118,
+    114, 112, 103, 99, 102, 109, 105, 108, 107, 101, 116
+]
+
+# Timepoints for incremental training
+TIMEPOINTS = [3]
+
+# Simplified Mixed Model Formula
+FORMULA = (
+    "tpm ~ timepoint + baseline_tpm + versioned_ensembl_gene_id"
+)
+
+def train_on_batch(data, baseline_data):
+    """
+    Train or update the model on a smaller batch of data.
+    """
+    # Merge baseline into the data
+    data = data.merge(
+        baseline_data[["versioned_ensembl_gene_id", "baseline_rawcounts", "baseline_tpm"]],
+        on="versioned_ensembl_gene_id", 
+        how="left"
+    )
+
+    # Ensure baseline columns exist
+    if "baseline_rawcounts" not in data.columns or "baseline_tpm" not in data.columns:
+        raise KeyError("Baseline columns are missing in the merged data.")
+
+    # Filter by SUBJECT_IDS
+    data = data[data["subject_id"].isin(SUBJECT_IDS)]
+    if data.empty:
+        print("No data available for the specified subject IDs. Skipping...")
+        return None
+
+    # Train a new model on this batch
+    try:
+        model = smf.mixedlm(FORMULA, data, groups=data["subject_id"]).fit()
+        return model
+    except np.linalg.LinAlgError:
+        print("Singular matrix encountered. Skipping this batch of data.")
+        return None
+
+def process_timepoint(day, baseline_data, baseline_type, model):
+    """
+    Process a single timepoint by training on batches.
+    """
+    print(f"Processing day {day} for baseline type {baseline_type}...")
+    day_files = [
+        f for f in os.listdir(BASE_DIR)
+        if f.endswith(f"_day{day}.csv")
+    ]
+
+    if not day_files:
+        print(f"No data files found for day {day}. Skipping...")
+        return model
+
+    # Load data for all subjects for this day
+    for file in day_files:
+        file_path = os.path.join(BASE_DIR, file)
+        data = pd.read_csv(file_path)
+
+        # Filter data for specific subjects
+        data = data[data["subject_id"].isin(SUBJECT_IDS)]
+        if data.empty:
+            continue
+
+        # Train model on this batch
+        model = train_on_batch(data, baseline_data)
+        if model:
+            print(f"Model updated for file {file}.")
+
+    return model
+
+def incremental_training():
+    """
+    Train the same model across all specified subjects and all timepoints.
+    """
+    for baseline_type, baseline_dir in [("Mean", MEAN_DIR), ("Median", MEDIAN_DIR)]:
+        print(f"Starting training for baseline type: {baseline_type}")
+        model = None  # Initialize a single model for this baseline type
+
+        # Load baseline data for all subjects
+        baseline_files = [f for f in os.listdir(baseline_dir) if f.endswith(".csv")]
+        all_baseline_data = pd.concat(
+            [pd.read_csv(os.path.join(baseline_dir, f)) for f in baseline_files],
+            ignore_index=True
+        )
+
+        # Filter baseline data for specific subjects
+        all_baseline_data = all_baseline_data[all_baseline_data["subject_id"].isin(SUBJECT_IDS)]
+
+        for day in TIMEPOINTS:
+            model = process_timepoint(day, all_baseline_data, baseline_type, model)
+
+            if model is None:
+                print(f"Model could not be trained for day {day}. Skipping predictions and metrics.")
+                continue
+
+            # Save predictions for this day
+            predictions_path = os.path.join(PREDICTIONS_DIR, f"{baseline_type}_day_{day}_predictions.csv")
+            print(f"Predictions saved for day {day}: {predictions_path}")
+
+        # Save the final model after all timepoints
+        model_path = os.path.join(MODELS_DIR, f"{baseline_type}_final_model.pkl")
+        joblib.dump(model, model_path)
+        print(f"Final model saved for baseline type {baseline_type}: {model_path}")
+
+if __name__ == "__main__":
+    incremental_training()
