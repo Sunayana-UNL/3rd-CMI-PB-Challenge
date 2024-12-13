@@ -1,5 +1,5 @@
 # Base directories
-BASE_DIR = "/lustre/work/ssbio/smalla2/WhoopingCough/RawDatasets/task2/ZSCORE/split_by_timepoint"
+BASE_DIR = "split_by_timepoint"
 MEAN_DIR = os.path.join(BASE_DIR, "Mean_Baseline")
 MEDIAN_DIR = os.path.join(BASE_DIR, "Median_Baseline")
 
