@@ -1,0 +1,158 @@
+# Base directories
+BASE_DIR = "/lustre/work/ssbio/smalla2/WhoopingCough/RawDatasets/task2/ZSCORE/split_by_timepoint"
+MEAN_DIR = os.path.join(BASE_DIR, "Mean_Baseline")
+MEDIAN_DIR = os.path.join(BASE_DIR, "Median_Baseline")
+
+# Output directories
+OUTPUT_DIR = os.path.join(BASE_DIR, "Output4")
+PREDICTIONS_DIR = os.path.join(OUTPUT_DIR, "Predictions")
+METRICS_DIR = os.path.join(OUTPUT_DIR, "Metrics")
+MODELS_DIR = os.path.join(OUTPUT_DIR, "Models")
+
+os.makedirs(PREDICTIONS_DIR, exist_ok=True)
+os.makedirs(METRICS_DIR, exist_ok=True)
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+# Cell types and timepoints
+CELL_TYPES = [
+    "Monocytes", "CD33HLADR", "Classical_Monocytes", "Non-Classical_Monocytes",
+    "Intermediate_Monocytes", "Bcells", "CD3CD19", "CD3CD19neg", "CD3 Tcells",
+    "CD4Tcells", "CD8Tcells", "Tregs", "TemraCD4", "NaiveCD4", "TemCD4",
+    "TcmCD4", "TemraCD8", "NaiveCD8", "TemCD8", "TcmCD8", "NK", "Basophils",
+    "mDC", "pDC", "ASCs (Plasmablasts)", "CD19+ CD3-", "MB doublets (CD19+CD14+)",
+    "B cells (CD19+CD3-CD14-CD56-)", "B cells (CD19+CD20+CD3-CD14-CD56-)",
+    "Memory B cells", "Naive B cells", "Proliferating B cells", "Activated B cells (ABCs)",
+    "B:NK doublets (CD19+CD3-CD14+)", "T cells (CD19-CD3+CD14-)",
+    "CD56+ CD3high T cells", "CD56+CD3+T cells", "CD4+CD8+ T cells",
+    "CD4-CD8- T cells", "T:M doublets (CD19-CD3+CD14+)", "CD19-CD3-", "NK cells (CD3-CD19-CD56+)",
+    "CD3-CD19-CD56- cells", "CD3-CD19-CD56-HLA-DR+CD14-CD16- cells", "non-pDCs",
+    "CD3-CD19-CD56-CD14-CD16-CD123-CD11c-HLA-DR+cells", "Conventional dendritic cells (cDCs)",
+    "cDC1", "cDC2", "Lineage - cells (CD3-CD19-CD56-HLA-DR-)", "Activated granulocytes",
+    "Lineage negative cells (CD3-CD19-CD56-HLA-DR-CD123-CD66b-)", "CD56high NK cells",
+    "Antibody secreting B cells (ASCs)", "BNK doublets", "CD19+CD3-", "CD3-CD19-",
+    "CD3-CD19-CD56-HLA-DR-CD14-CD16- cells", "CD56+CD3high T cells",
+    "Lineage- cells (CD3-CD19-CD56-HLA-DR-)", "MB doublets", "TB doublets",
+    "T cells (CD19-CD3-CD14-)", "TM doublets"
+]
+TIMEPOINTS = [1.0, 3.0, 7.0, 14.0, 30.0]
+
+# Mixed model formula
+FORMULA = ("percent_live_cell ~ timepoint + I(timepoint**2) + "
+    "cell_type_name * baseline+ timepoint * baseline + cell_type_name * timepoint"
+)
+def sanitize_filename(name):
+    """Sanitize filenames to avoid issues with special characters."""
+    return name.replace(" ", "_").replace("(", "").replace(")", "").replace("/", "_")
+
+def train_incremental_model(data, baseline_data, cell, day, model, baseline_type):
+    """Train and evaluate the model incrementally with overlapping subject IDs."""
+    # Ensure 'baseline' column exists in baseline_data
+    if "baseline" not in baseline_data.columns:
+        raise KeyError(f"'baseline' column not found in baseline_data for cell {cell}. Ensure the file is correctly formatted.")
+    
+    # Print baseline data to verify the structure
+    print(f"Baseline data preview for {cell}:\n", baseline_data.head())
+    
+    # Find overlapping subject IDs
+    overlapping_subjects = set(data["subject_id"]).intersection(set(baseline_data["subject_id"]))
+    if not overlapping_subjects:
+        print(f"No overlapping subject IDs for cell {cell}, day {day}, baseline type: {baseline_type}. Skipping...")
+        return model
+
+    # Filter current day's data to include only overlapping subject IDs
+    specific_data = data[data["subject_id"].isin(overlapping_subjects)]
+    if specific_data.empty:
+        print(f"No data after filtering for overlaps for cell {cell}, day {day}, baseline type: {baseline_type}. Skipping...")
+        return model
+
+    # Merge baseline into specific_data
+    try:
+        specific_data = specific_data.merge(baseline_data[["subject_id", "baseline"]], on="subject_id", how="left")
+    except KeyError as e:
+        print(f"Error merging baseline data: {e}")
+        print(f"Columns in baseline_data: {baseline_data.columns.tolist()}")
+        print(f"Columns in specific_data: {specific_data.columns.tolist()}")
+        return model
+
+    if "baseline" not in specific_data.columns:
+        print(f"Baseline column missing after merge for cell {cell}, day {day}, baseline type: {baseline_type}. Skipping...")
+        return model
+
+    # Split overlapping data into 80% training and 20% testing
+    train_data, test_data = train_test_split(specific_data, test_size=0.2, random_state=42)
+    if train_data.empty:
+        print(f"Training data for cell {cell}, day {day}, baseline type: {baseline_type} is empty. Skipping...")
+        return model
+
+    try:
+        # Train or update the model
+        if model is None:
+            print(f"Training new model for cell {cell}, day {day}, baseline type: {baseline_type}...")
+            model = smf.mixedlm(FORMULA, train_data, groups=train_data["subject_id"]).fit()
+        else:
+            print(f"Updating model for cell {cell}, day {day}, baseline type: {baseline_type}...")
+            model = smf.mixedlm(FORMULA, train_data, groups=train_data["subject_id"]).fit()
+
+        # Save the model
+        sanitized_cell = sanitize_filename(cell)
+        model_path = os.path.join(MODELS_DIR, f"{sanitized_cell}_day_{day}_{baseline_type}_model.pkl")
+        joblib.dump(model, model_path)
+
+        # Evaluate on test data
+        test_data["Predicted_percent_live_cell"] = model.predict(test_data)
+        mse = mean_squared_error(test_data["percent_live_cell"], test_data["Predicted_percent_live_cell"])
+        r2 = r2_score(test_data["percent_live_cell"], test_data["Predicted_percent_live_cell"])
+
+        # Save predictions
+        predictions_path = os.path.join(PREDICTIONS_DIR, f"{sanitized_cell}_day_{day}_{baseline_type}_predictions.csv")
+        test_data.to_csv(predictions_path, index=False)
+
+        # Save metrics
+        metrics_path = os.path.join(METRICS_DIR, f"{sanitized_cell}_day_{day}_{baseline_type}_metrics.txt")
+        with open(metrics_path, "w") as f:
+            f.write(f"Cell: {cell}, Day: {day}, Baseline Type: {baseline_type}\n")
+            f.write(f"Mean Squared Error (MSE): {mse}\n")
+            f.write(f"R-squared (R2): {r2}\n")
+
+        print(f"Metrics saved for cell {cell}, day {day}, baseline type: {baseline_type}.")
+        return model
+
+    except Exception as e:
+        print(f"Error training model for cell {cell}, day {day}, baseline type: {baseline_type}: {e}")
+        return model
+
+def incremental_training():
+    """Main incremental training loop."""
+    for baseline_type, baseline_dir in [("Mean", MEAN_DIR), ("Median", MEDIAN_DIR)]:
+        for cell in CELL_TYPES:
+            sanitized_cell = sanitize_filename(cell)
+            print(f"Loading baseline for {cell}, baseline type: {baseline_type}...")
+            baseline_path = os.path.join(baseline_dir, f"{sanitized_cell}_baseline_{baseline_type.lower()}.csv")
+            if not os.path.exists(baseline_path):
+                print(f"Baseline file not found for cell {cell}, baseline type: {baseline_type}. Skipping...")
+                continue
+
+            # Load baseline data
+            baseline_data = pd.read_csv(baseline_path)
+            if baseline_data.empty:
+                print(f"Baseline data for cell {cell}, type {baseline_type} is empty. Skipping...")
+                continue
+
+            model = None  # Initialize a fresh model for each baseline type
+            for day in TIMEPOINTS:
+                file_path = os.path.join(BASE_DIR, f"{sanitized_cell}_day{day}.csv")
+                if not os.path.exists(file_path):
+                    print(f"Data file not found for cell {cell}, day {day}, baseline type: {baseline_type}. Skipping...")
+                    continue
+
+                # Load daily data
+                data = pd.read_csv(file_path)
+                if data.empty:
+                    print(f"No data in file for cell {cell}, day {day}, baseline type: {baseline_type}. Skipping...")
+                    continue
+
+                # Train the model
+                model = train_incremental_model(data, baseline_data, cell, day, model, baseline_type)
+
+if __name__ == "__main__":
+    incremental_training()
