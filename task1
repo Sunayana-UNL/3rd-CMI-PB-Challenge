@@ -1,0 +1,84 @@
+import pandas as pd
+from sklearn.model_selection import train_test_split, cross_val_score, KFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+import joblib
+
+# Assume `data` is your DataFrame and the required columns are present
+
+# Specify features and target
+features = ["MFI", "timepoint", "lower_limit_of_detection"]
+target = "Response"
+
+# Normalize the features
+scaler = StandardScaler()
+data[features] = scaler.fit_transform(data[features])
+
+# Define the mixed-effects model formula
+formula = f"{target} ~ {' + '.join(features)}"
+
+# Train-test split
+X = data[features]
+y = data[target]
+groups = data["Individual_ID"]
+
+X_train, X_test, y_train, y_test, groups_train, groups_test = train_test_split(
+    X, y, groups, test_size=0.2, random_state=42
+)
+
+# Combine train data for statsmodels
+train_data = X_train.copy()
+train_data[target] = y_train
+train_data["Individual_ID"] = groups_train
+
+# Fit the mixed-effects model
+model = smf.mixedlm(formula, train_data, groups=train_data["Individual_ID"])
+result = model.fit()
+
+# Save the trained mixed-effects model
+with open('trained_mixed_effects_model.pkl', 'wb') as f:
+    joblib.dump(result, f)
+print("Mixed-effects model saved as 'trained_mixed_effects_model.pkl'.")
+
+# Cross-validation
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+cv_scores = []
+
+for train_idx, val_idx in kf.split(X, y, groups):
+    train_data = data.iloc[train_idx].copy()
+    val_data = data.iloc[val_idx].copy()
+    
+    train_data[target] = y.iloc[train_idx]
+    train_data["Individual_ID"] = groups.iloc[train_idx]
+    
+    # Fit the model on training folds
+    cv_model = smf.mixedlm(formula, train_data, groups=train_data["Individual_ID"])
+    cv_result = cv_model.fit()
+    
+    # Predict on validation folds
+    val_data["Predicted_Response"] = cv_result.predict(val_data)
+    
+    # Calculate MSE
+    mse = mean_squared_error(val_data[target], val_data["Predicted_Response"])
+    cv_scores.append(mse)
+
+print(f"Cross-Validation MSE Scores: {cv_scores}")
+print(f"Mean CV MSE: {sum(cv_scores)/len(cv_scores):.3f}")
+
+# Predict on the test set
+test_data = X_test.copy()
+test_data["Predicted_Response"] = result.predict(X_test)
+
+# Evaluate on the test set
+test_mse = mean_squared_error(y_test, test_data["Predicted_Response"])
+print(f"Test Set Mean Squared Error: {test_mse:.3f}")
+
+# Rank individuals based on predicted responses
+data["Predicted_Response"] = result.predict(X)
+data["Rank"] = data["Predicted_Response"].rank(ascending=False)
+
+# Save ranked data
+data[["Individual_ID", "Predicted_Response", "Rank"]].to_csv('ranked_individuals.csv', index=False)
+print("Ranked data saved as 'ranked_individuals.csv'.")
