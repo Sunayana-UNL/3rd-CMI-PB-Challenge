@@ -35,9 +35,7 @@ FORMULA = (
 )
 
 def train_on_batch(data, baseline_data):
-    """
-    Train or update the model on a smaller batch of data.
-    """
+
     # Merge baseline into the data
     data = data.merge(
         baseline_data[["versioned_ensembl_gene_id", "baseline_rawcounts", "baseline_tpm"]],
@@ -64,9 +62,7 @@ def train_on_batch(data, baseline_data):
         return None
 
 def process_timepoint(day, baseline_data, baseline_type, model):
-    """
-    Process a single timepoint by training on batches.
-    """
+
     print(f"Processing day {day} for baseline type {baseline_type}...")
     day_files = [
         f for f in os.listdir(BASE_DIR)
@@ -95,9 +91,7 @@ def process_timepoint(day, baseline_data, baseline_type, model):
     return model
 
 def incremental_training():
-    """
-    Train the same model across all specified subjects and all timepoints.
-    """
+
     for baseline_type, baseline_dir in [("Mean", MEAN_DIR), ("Median", MEDIAN_DIR)]:
         print(f"Starting training for baseline type: {baseline_type}")
         model = None  # Initialize a single model for this baseline type
