@@ -13,7 +13,7 @@ os.makedirs(PREDICTIONS_DIR, exist_ok=True)
 os.makedirs(METRICS_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-# Cell types and timepoints
+# Cell types and timepoints (splitting the data based on cell type at each time point)
 CELL_TYPES = [
     "Monocytes", "CD33HLADR", "Classical_Monocytes", "Non-Classical_Monocytes",
     "Intermediate_Monocytes", "Bcells", "CD3CD19", "CD3CD19neg", "CD3 Tcells",
@@ -36,7 +36,7 @@ CELL_TYPES = [
 ]
 TIMEPOINTS = [1.0, 3.0, 7.0, 14.0, 30.0]
 
-# Mixed model formula
+# Mixed model formula (changes depending on the type of data)
 FORMULA = ("percent_live_cell ~ timepoint + I(timepoint**2) + "
     "cell_type_name * baseline+ timepoint * baseline + cell_type_name * timepoint"
 )
